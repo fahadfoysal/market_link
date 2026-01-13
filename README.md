@@ -66,14 +66,22 @@ Customer → POST /api/orders/
      ↓
 Create RepairOrder (status=pending)
 Reserve stock (Redis lock + atomic decrement)
-Return payment_url (Stripe client secret)
+Create Stripe Checkout Session
+Return order_id + payment_url (Stripe Checkout URL)
      ↓
-Customer → Redirect to Stripe Payment Page
+Customer → Opens payment_url in browser
      ↓
-Payment Complete → Stripe webhook → POST /webhooks/payment/
+Stripe Checkout Page (Hosted by Stripe)
+Customer enters card details
+     ↓
+Payment Complete → Stripe redirects to /api/orders/{id}/success/
+Payment Cancelled → Stripe redirects to /api/orders/{id}/cancel/
+     ↓
+Stripe webhook → POST /api/webhooks/payment/
      ↓
 Verify signature (STRIPE_WEBHOOK_SECRET)
 Check idempotency (event_id in PaymentEvent)
+Backfill stripe_payment_intent_id if missing
 Mark order as paid + Enqueue background job
      ↓
 Background task: Send invoice + Mark processing
@@ -122,21 +130,31 @@ def handle_payment_intent_succeeded(event):
 
 ### 5. Payment Gateway Choice
 
-**Integration**: Stripe Payment Intents API
+**Integration**: Stripe Checkout Sessions
 
-**Why Stripe**:
+**Why Stripe Checkout**:
+- Hosted payment page (no frontend required)
+- PCI DSS compliant (Stripe handles all card data)
 - Industry standard for SaaS/marketplace
-- Excellent webhook system
-- PCI DSS compliant (reduces liability)
-- Works globally
+- Excellent webhook system for payment confirmation
+- Works globally with multiple payment methods
+- Handles 3D Secure and SCA compliance automatically
 - Clear documentation and SDKs
 
 **Flow**:
-1. Backend creates PaymentIntent: `stripe.PaymentIntent.create()`
-2. Returns `client_secret` to frontend
-3. Frontend completes payment (Stripe.js)
-4. Stripe sends webhook to `/api/webhooks/payment/`
-5. Backend processes webhook + marks order paid
+1. Backend creates Checkout Session: `stripe.checkout.Session.create()`
+2. Returns `payment_url` (Checkout page URL) to customer
+3. Customer opens URL and completes payment on Stripe's hosted page
+4. Stripe redirects to success/cancel URL based on payment result
+5. Stripe sends `payment_intent.succeeded` webhook to `/api/webhooks/payment/`
+6. Backend processes webhook + marks order paid
+7. Background job sends invoice email
+
+**Key Features**:
+- No frontend code needed - just redirect to `payment_url`
+- Automatic metadata attachment to payment intent for webhook reconciliation
+- Idempotent webhook processing prevents double-charging
+- Amount verification ensures payment matches order total
 
 ### 6. Background Tasks
 
@@ -259,6 +277,8 @@ POST   /api/orders/                  - Create order (customer)
 GET    /api/orders/my/               - My orders (customer)
 GET    /api/orders/vendor/           - Vendor's orders (vendor)
 GET    /api/orders/{id}/             - Order details (customer or vendor)
+GET    /api/orders/{id}/success/     - Payment success redirect (public)
+GET    /api/orders/{id}/cancel/      - Payment cancel redirect (public)
 ```
 
 ### Payments
@@ -278,8 +298,9 @@ POST   /api/webhooks/payment/        - Stripe webhook (public)
 # .env file
 SECRET_KEY=your-django-secret-key
 DEBUG=True
+ALLOWED_HOSTS=localhost,127.0.0.1
 
-# Stripe
+# Stripe (get from https://dashboard.stripe.com/)
 STRIPE_PUBLIC_KEY=pk_test_...
 STRIPE_SECRET_KEY=sk_test_...
 STRIPE_WEBHOOK_SECRET=whsec_...
@@ -291,6 +312,17 @@ EMAIL_BACKEND=django.core.mail.backends.console.EmailBackend
 # Redis (optional, for Celery tasks)
 CELERY_BROKER_URL=redis://127.0.0.1:6379/0
 CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/0
+
+# Database (optional, defaults to SQLite)
+DB_ENGINE=django.db.backends.sqlite3
+DB_NAME=db.sqlite3
+# For PostgreSQL:
+# DB_ENGINE=django.db.backends.postgresql
+# DB_NAME=marketlink
+# DB_USER=postgres
+# DB_PASSWORD=your_password
+# DB_HOST=localhost
+# DB_PORT=5432
 ```
 
 ### Installation Steps
@@ -299,10 +331,14 @@ CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/0
 git clone <repo>
 cd market_link
 python -m venv venv
-source venv/bin/activate
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
+pip install python-dotenv  # For loading .env file
+
+# Create .env file
+cp .env.example .env  # Or create manually with variables above
 
 # Create database
 python manage.py migrate
@@ -315,6 +351,47 @@ python manage.py runserver
 
 # Run Celery (optional, for background tasks)
 celery -A market_link worker -l info
+```
+
+### Stripe Webhook Setup (Development)
+
+For local testing, use Stripe CLI to forward webhooks:
+
+```bash
+# Install Stripe CLI (https://stripe.com/docs/stripe-cli)
+brew install stripe/stripe-cli/stripe  # macOS
+# Or download from https://github.com/stripe/stripe-cli/releases
+
+# Login to Stripe
+stripe login
+
+# Forward webhooks to local server
+stripe listen --forward-to localhost:8000/api/webhooks/payment/
+
+# Copy the webhook secret (whsec_...) to your .env file
+# STRIPE_WEBHOOK_SECRET=whsec_...
+
+# Test webhook
+stripe trigger payment_intent.succeeded
+```
+
+### Using ngrok for External Testing
+
+```bash
+# Install ngrok (https://ngrok.com/)
+ngrok http 8000
+
+# Add ngrok URL to ALLOWED_HOSTS in .env
+ALLOWED_HOSTS=localhost,127.0.0.1,your-ngrok-domain.ngrok-free.dev
+
+# Add to Django settings.py CSRF_TRUSTED_ORIGINS
+CSRF_TRUSTED_ORIGINS = [
+    'https://your-ngrok-domain.ngrok-free.dev',
+    'http://localhost:8000',
+]
+
+# Use ngrok URL for Stripe webhook endpoint:
+# https://your-ngrok-domain.ngrok-free.dev/api/webhooks/payment/
 ```
 
 ## Testing
@@ -383,9 +460,49 @@ curl -X POST http://localhost:8000/api/orders/ \
     "variant_id": "<variant_uuid>"
   }'
 
-# Response includes payment_url with Stripe client secret
-# Customer redirects to Stripe payment page
-# After payment, Stripe sends webhook to /api/webhooks/payment/
+# Response:
+{
+  "success": true,
+  "message": "Repair order created successfully. Proceed to payment.",
+  "data": {
+    "id": "8dc6c845-56c0-4f60-b2a7-5e733e48eb36",
+    "customer_email": "customer@example.com",
+    "vendor_name": "John's Auto Repair",
+    "variant": {
+      "id": "...",
+      "name": "Standard Oil Change",
+      "price": "29.99",
+      "stock": 4
+    },
+    "total_amount": "29.99",
+    "status": "pending",
+    "payment_method": "stripe",
+    "payment_url": "https://checkout.stripe.com/pay/cs_test_a1B2c3D4...",
+    "created_at": "2026-01-13T15:30:00Z",
+    "updated_at": "2026-01-13T15:30:00Z"
+  }
+}
+
+# Open payment_url in browser to complete payment
+# User enters test card: 4242 4242 4242 4242
+
+# After payment success, Stripe redirects to:
+# http://localhost:8000/api/orders/{order_id}/success/
+
+# Stripe webhook automatically processes payment:
+# POST /api/webhooks/payment/ (sent by Stripe)
+# Order status changes: pending → paid
+
+# Check order status
+curl -X GET http://localhost:8000/api/orders/my/ \
+  -H "Authorization: Bearer <customer_token>"
+```
+
+**Stripe Test Cards**:
+```
+Success: 4242 4242 4242 4242 (any future expiry, any CVC)
+Decline: 4000 0000 0000 0002
+Requires Auth: 4000 0027 6000 3184 (3D Secure)
 ```
 
 ## Business Rules & Edge Cases
@@ -474,6 +591,13 @@ Key log points:
 
 6. **Audit Logging**: No audit trail for payment changes
    - **Future**: Implement django-audit-log
+
+7. **Stripe Checkout Session Expiry**: Sessions expire after 24 hours
+   - **Current**: payment_url becomes invalid after 24h
+   - **Future**: Add endpoint to regenerate payment URL for pending orders
+
+8. **Stock Refund on Payment Failure**: Currently requires manual intervention
+   - **Future**: Implement automatic stock refund after payment timeout/failure
 
 ## Deployment Notes
 
