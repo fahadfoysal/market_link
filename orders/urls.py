@@ -3,7 +3,9 @@ from .views import (
     CreateRepairOrderView,
     ListCustomerOrdersView,
     ListVendorOrdersView,
-    RetrieveOrderView
+    RetrieveOrderView,
+    PaymentSuccessView,
+    PaymentCancelView
 )
 
 app_name = 'orders'
@@ -20,4 +22,8 @@ urlpatterns = [
     
     # Order details
     path('<uuid:id>/', RetrieveOrderView.as_view(), name='order-detail'),
+
+    # Payment redirect targets
+    path('<uuid:id>/success/', PaymentSuccessView.as_view(), name='payment-success'),
+    path('<uuid:id>/cancel/', PaymentCancelView.as_view(), name='payment-cancel'),
 ]

@@ -6,11 +6,68 @@ import hashlib
 import hmac
 import json
 import stripe
+from django.urls import reverse
 
 logger = logging.getLogger(__name__)
 
 # Initialize Stripe
 stripe.api_key = os.getenv('STRIPE_SECRET_KEY', 'sk_test_dummy')
+
+
+def create_stripe_checkout_session(order, request):
+    """Create a Stripe Checkout session and return the hosted payment URL."""
+    if request is None:
+        logger.error("Request object is required to build redirect URLs")
+        return None
+
+    try:
+        success_url = request.build_absolute_uri(
+            reverse('orders:payment-success', args=[order.id])
+        )
+        cancel_url = request.build_absolute_uri(
+            reverse('orders:payment-cancel', args=[order.id])
+        )
+
+        session = stripe.checkout.Session.create(
+            payment_method_types=['card'],
+            line_items=[{
+                'price_data': {
+                    'currency': 'usd',
+                    'product_data': {
+                        'name': f"{order.variant.service.name} - {order.variant.name}",
+                    },
+                    'unit_amount': int(order.total_amount * 100),
+                },
+                'quantity': 1,
+            }],
+            metadata={
+                'order_id': str(order.id),
+                'customer_email': order.customer.email,
+                'vendor_name': order.vendor.business_name,
+            },
+            payment_intent_data={
+                'metadata': {
+                    'order_id': str(order.id),
+                    'customer_email': order.customer.email,
+                    'vendor_name': order.vendor.business_name,
+                }
+            },
+            mode='payment',
+            success_url=success_url,
+            cancel_url=cancel_url,
+        )
+
+        order.payment_method = 'stripe'
+        # Store the associated payment intent for reconciliation
+        order.stripe_payment_intent_id = session.payment_intent
+        order.save(update_fields=['payment_method', 'stripe_payment_intent_id'])
+
+        logger.info(f"Created Stripe checkout session {session.id} for order {order.id}")
+        return session.url
+
+    except stripe.error.StripeError as e:
+        logger.error(f"Stripe error creating checkout session for order {order.id}: {str(e)}")
+        return None
 
 
 def create_stripe_payment_intent(order):
@@ -138,6 +195,12 @@ def handle_payment_intent_succeeded(event):
     # Mark order as paid
     try:
         with transaction.atomic():
+            # Backfill payment intent ID if it was not stored during checkout creation
+            if not order.stripe_payment_intent_id:
+                order.stripe_payment_intent_id = intent['id']
+                order.payment_method = order.payment_method or 'stripe'
+                order.save(update_fields=['stripe_payment_intent_id', 'payment_method'])
+
             order.mark_as_paid()
             
             # Record the successful payment event

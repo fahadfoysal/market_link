@@ -83,11 +83,16 @@ class RepairOrderDetailSerializer(serializers.ModelSerializer):
     
     def get_payment_url(self, obj):
         """Return payment URL if order is pending payment."""
-        if obj.status == RepairOrder.Status.PENDING:
-            from payments.utils import create_stripe_payment_intent
-            try:
-                payment_url = create_stripe_payment_intent(obj)
-                return payment_url
-            except Exception:
-                return None
-        return None
+        if obj.status != RepairOrder.Status.PENDING:
+            return None
+
+        request = self.context.get('request')
+        if request is None:
+            return None
+
+        from payments.utils import create_stripe_checkout_session
+
+        try:
+            return create_stripe_checkout_session(obj, request)
+        except Exception:
+            return None

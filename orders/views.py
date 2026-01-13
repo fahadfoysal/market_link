@@ -33,7 +33,7 @@ class CreateRepairOrderView(generics.CreateAPIView):
         serializer.is_valid(raise_exception=True)
         order = serializer.save()
         
-        response_serializer = RepairOrderDetailSerializer(order)
+        response_serializer = RepairOrderDetailSerializer(order, context={'request': request})
         return Response(
             {
                 'success': True,
@@ -143,4 +143,48 @@ class RetrieveOrderView(generics.RetrieveAPIView):
                 'data': serializer.data
             },
             status=status.HTTP_200_OK
+        )
+
+
+class PaymentSuccessView(generics.GenericAPIView):
+    """Return a simple success response after Stripe redirects back."""
+
+    permission_classes = [permissions.AllowAny]
+    lookup_field = 'id'
+    queryset = RepairOrder.objects.all()
+
+    def get(self, request, *args, **kwargs):
+        order = get_object_or_404(RepairOrder, id=self.kwargs['id'])
+        return Response(
+            {
+                'success': True,
+                'message': 'Payment successful. Your order is being processed.',
+                'data': {
+                    'order_id': str(order.id),
+                    'status': order.status,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class PaymentCancelView(generics.GenericAPIView):
+    """Return a simple cancelled response after Stripe redirects back."""
+
+    permission_classes = [permissions.AllowAny]
+    lookup_field = 'id'
+    queryset = RepairOrder.objects.all()
+
+    def get(self, request, *args, **kwargs):
+        order = get_object_or_404(RepairOrder, id=self.kwargs['id'])
+        return Response(
+            {
+                'success': False,
+                'message': 'Payment was cancelled. Your order is still pending.',
+                'data': {
+                    'order_id': str(order.id),
+                    'status': order.status,
+                },
+            },
+            status=status.HTTP_200_OK,
         )
