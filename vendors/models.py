@@ -14,4 +14,4 @@ class VendorProfile(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return self.user.get_short_name() + " - " + self.business_name[10:]
+        return self.user.get_short_name() + " - " + self.business_name[:15]

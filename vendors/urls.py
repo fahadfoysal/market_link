@@ -8,7 +8,7 @@ from .views import (
 app_name = 'vendors'
 
 urlpatterns = [
-    path('vendors/profile/', VendorProfileCreateView.as_view(), name='vendor-profile-create'),
-    path('vendors/profile/me/', VendorProfileRetrieveView.as_view(), name='vendor-profile-retrieve'),
-    path('vendors/profile/me/update/', VendorProfileUpdateView.as_view(), name='vendor-profile-update'),
+    path('profile/', VendorProfileCreateView.as_view(), name='vendor-profile-create'),
+    path('profile/me/', VendorProfileRetrieveView.as_view(), name='vendor-profile-retrieve'),
+    path('profile/me/update/', VendorProfileUpdateView.as_view(), name='vendor-profile-update'),
 ]
