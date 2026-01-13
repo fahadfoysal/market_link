@@ -26,8 +26,14 @@ SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-sxhfxk5(lxv0x@sl^y1$y&+g9k
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
-ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', '').split(',') if os.getenv('ALLOWED_HOSTS') else []
+ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', '').split(',') if os.getenv('ALLOWED_HOSTS') else ['*']
 
+# CSRF Trusted Origins for ngrok and external domains
+CSRF_TRUSTED_ORIGINS = [
+    'https://sharply-gemless-marlene.ngrok-free.dev',
+    'http://localhost:8000',
+    'http://127.0.0.1:8000',
+]
 
 # Application definition
 

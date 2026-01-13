@@ -185,7 +185,7 @@ class ListCreateServiceVariantView(generics.ListCreateAPIView):
         
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        service_variant = serializer.save(service_id=service_id)
+        service_variant = serializer.save(service=service)
         
         response_serializer = ServiceVariantSerializer(service_variant)
         return Response(
